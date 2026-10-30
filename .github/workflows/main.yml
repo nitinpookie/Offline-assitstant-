@@ -62,12 +62,18 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install SDK platform 34
-        continue-on-error: true
-        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+      # The runner already has the Android SDK. Using it directly avoids the failing setup-android action.
+      - name: Prepare Android SDK
+        run: |
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "sdk.dir=$SDK" > local.properties
+          ls "$SDK/platforms" || true
+          set +e
+          yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1
+          "$SDK/cmdline-tools/latest/bin/sdkmanager" "platforms;android-34" "build-tools;34.0.0" > /dev/null 2>&1
+          exit 0
 
       - name: Install Gradle 8.4
         run: |
