@@ -1,0 +1,100 @@
+name: Build iLauncher APK
+
+on:
+  push:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # Works both ways: (1) you uploaded the project ZIP into the repo root, or
+      # (2) you uploaded the extracted files. If a zip is there, the newest one wins.
+      - name: Prepare project
+        shell: bash
+        run: |
+          set -e
+          newest=""; best=-1
+          for f in *.zip; do
+            [ -f "$f" ] || continue
+            t=$(git log -1 --format=%ct -- "$f" 2>/dev/null || echo 0)
+            [ -z "$t" ] && t=0
+            if [ "$t" -ge "$best" ]; then newest="$f"; best="$t"; fi
+          done
+          if [ -n "$newest" ]; then
+            echo "Using zip: $newest"
+            rm -rf /tmp/proj && mkdir -p /tmp/proj
+            unzip -o -q "$newest" -d /tmp/proj
+            sg=$(find /tmp/proj -name settings.gradle -not -path '*/__MACOSX/*' | awk '{print length, $0}' | sort -n | head -1 | cut -d' ' -f2-)
+            if [ -z "$sg" ]; then
+              echo "::error::settings.gradle not found inside $newest"
+              exit 1
+            fi
+            src=$(dirname "$sg")
+            rm -rf app build.gradle settings.gradle gradle.properties
+            cp -a "$src"/. ./
+          else
+            echo "No zip in repo root - building the files that are already in the repo"
+          fi
+          if [ ! -f settings.gradle ] || [ ! -f app/build.gradle ] || [ ! -d app/src/main ]; then
+            echo "::error::Project files missing. Need settings.gradle, app/build.gradle and app/src/main in the repo root."
+            ls -la
+            exit 1
+          fi
+          grep -n "versionName\|versionCode" app/build.gradle
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK platform 34
+        continue-on-error: true
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Install Gradle 8.4
+        run: |
+          curl -fsSL --retry 5 --retry-delay 3 -o /tmp/gradle.zip https://services.gradle.org/distributions/gradle-8.4-bin.zip
+          mkdir -p "$HOME/gradle"
+          unzip -q /tmp/gradle.zip -d "$HOME/gradle"
+          echo "$HOME/gradle/gradle-8.4/bin" >> "$GITHUB_PATH"
+
+      - name: Build debug APK
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Build release APK (smaller and faster)
+        continue-on-error: true
+        run: gradle assembleRelease --no-daemon
+
+      - name: Collect APKs
+        if: always()
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/*.apk dist/iLauncher-debug.apk 2>/dev/null || true
+          cp app/build/outputs/apk/release/*.apk dist/iLauncher-release.apk 2>/dev/null || true
+          ls -la dist
+
+      - name: Upload APKs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iLauncher-APK-run${{ github.run_number }}
+          path: dist/*.apk
+          if-no-files-found: warn
